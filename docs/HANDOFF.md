@@ -1,12 +1,13 @@
 # Limitless Checkout — current handoff
 
-Last updated: 2026-09-15.
+Last updated: 2026-09-16.
 
 ## Safety state
 
 - Production branch: `hoplite/beroia-65b17429`.
 - Customer charging remains **OFF**.
-- Supabase runtime config `production` currently has `payment_acceptance_enabled=false` and `public_payment_enabled=false`.
+- Supabase runtime config `production` is currently `payment_acceptance_enabled=false` and `public_payment_enabled=false`.
+- All three brand records currently report `status=live` and `mode=live`, but there are **no** `launch_acceptance:*` records yet. Treat this as configuration state only; it does not mean transactional launch acceptance is complete.
 - Do not arm controlled acceptance until the owner explicitly authorizes the real acceptance purchase immediately before it happens.
 - Do not enable public payments until controlled acceptance succeeds and the owner separately authorizes public charging.
 
@@ -77,21 +78,17 @@ Source tracking:
 - `migrations/009_launch_admin_v3.sql`
 - `migrations/010_lock_bootstrap_runtime_role.sql`
 - `migrations/011_fix_launch_policy_commit_validation.sql`
+- `migrations/012_require_controlled_acceptance_attempt.sql`
 
 The old bootstrap role RPC was locked down after the Supabase security advisor identified that it was executable by browser roles. Anonymous/authenticated/service-role execution was revoked; the remaining advisor entries are informational RLS-with-no-policy notices for intentionally private deny-by-default tables.
 
+On 2026-09-16, migration `require_controlled_acceptance_attempt` hardened `limitless_launch_acceptance_commit`: an acceptance record can now only be committed if the referenced payment attempt exists for the same brand, is `completed`, has `acceptanceMode=true`, has an acceptance nonce, and exactly matches the recorded Shopify order, total, Shopify domain and Whop company. This prevents an ordinary completed payment attempt from being recorded as launch acceptance.
+
+Git tracking commit for migration 012: `2243811e2c466d90e586a792179eb4d1d436bf5d`.
+
 ## Verified Netlify deployment
 
-Latest verified production application deploy containing the private acceptance route/UI wiring and source tracking:
-
-- deploy `6aa9a4e67d96de0009537bd9`
-- state `ready`
-- commit `f3683c33a50fe5cdaf4011f165fd72c403b627a7`
-- Next.js plugin/build success
-- secret scan: zero matches
-- branch `hoplite/beroia-65b17429`
-
-Later commits `7771fb890cf596b8633d04fb0cb04c89c44d242d`, `a803342f6e74aa929417c95f9478f6a95d121182`, and `6ca6c6fae3887883ae6576096b7c2a64eaea9c65` add tracked SQL migration files/documentation; they do not weaken payment gates.
+Latest independently verified production application runtime deploy remains the deployment containing the private acceptance route/UI wiring. Later commits include source tracking, SQL migrations, policy fixes and storefront documentation; do not infer a Netlify runtime change from documentation-only commits.
 
 ## Payment and reconciliation behavior
 
@@ -107,6 +104,7 @@ The v3 payment design preserves these safety invariants:
 8. Exactly one Shopify draft is completed into the paid order under a completion lease/idempotency guard.
 9. Duplicate/retried webhooks must not create another Shopify order.
 10. Customer confirmation is based on persisted payment-attempt state, not merely a browser redirect.
+11. Launch acceptance persistence additionally requires a completed controlled `acceptanceMode=true` attempt matching the final order/provider/total data.
 
 Public customer charging remains disabled until controlled acceptance passes.
 
@@ -217,7 +215,7 @@ FACEJAMAS:
 - normal print placement/color variation may occur unless an explicit production proof is provided;
 - Shopify stores an opaque Personalization ID while fulfillment retrieves private artwork through authenticated/time-limited tooling.
 
-Owner approved policy v2 for CHEFINGS, COZYINFANTS and FACEJAMAS on 2026-09-15. The initial Launch Center approval clicks exposed a validation bug in `limitless_launch_policy_commit`; the RPC was corrected (`OR` validation instead of accidental string concatenation), and all three explicit owner approvals were then persisted with their current policy-v2 hashes. This approval is **not** authorization for a real charge or for public payment enablement.
+Owner approved policy v2 for CHEFINGS, COZYINFANTS and FACEJAMAS on 2026-09-15. The initial Launch Center approval clicks exposed a validation bug in `limitless_launch_policy_commit`; the RPC was corrected and all three explicit owner approvals were persisted with their current policy-v2 hashes. This approval is **not** authorization for a real charge or for public payment enablement.
 
 ## Storefront / launch configuration
 
@@ -240,19 +238,20 @@ Launch configuration:
 - standard shipping: free;
 - priority processing: $4.99 once/order, unchecked by default.
 
-All three brands remain `draft/demo` until launch acceptance is complete.
+Current Limitless brand metadata is `live/live` for all three brands, while both payment gates remain OFF and no controlled acceptance record exists yet.
 
-## Remaining work before public launch — ordered
+Storefront design work on 2026-09-16 prepared unpublished Studio Draft themes for Chefings, Cozy Infants and FaceJamas. Shopify's connected automation interface blocks theme publishing, so making those Studio Drafts the live Shopify themes is a manual Shopify Admin action by the owner. Publishing a theme does not authorize or enable Limitless customer charging.
 
-1. Confirm current Launch Center readiness shows providers/catalog/shipping/policy ready while both payment gates remain OFF.
-2. Immediately before a real charge, obtain explicit owner authorization for one controlled real acceptance purchase.
-3. Only then set `payment_acceptance_enabled=true` while keeping `public_payment_enabled=false`.
-4. Use the Launch Center **Start private acceptance checkout** action for CHEFINGS first and complete one real purchase in the browser-only 20-minute acceptance session.
-5. Verify exact Whop payment → signed callback → independent Whop lookup → one Shopify order → confirmed customer state; retry/duplicate delivery must not create a second order.
-6. Record the shown immutable `attempt_...` ID in Launch Center.
-7. Run a FaceJamas acceptance purchase if required for personalized-order fulfillment verification; confirm Shopify has `Personalization ID` and private fulfillment resolution works. No checkout image embedding is required.
-8. Activate the accepted brand to `live/live` while public payment can still remain OFF.
-9. Ask for separate explicit owner authorization before setting `public_payment_enabled=true` for customers.
+## Remaining work before public transactional launch — ordered
+
+1. In each Shopify Admin, publish the prepared Studio Draft theme if the owner wants the redesign live. Images can be replaced afterward.
+2. Confirm Launch Center readiness still shows provider/catalog/shipping/policy prerequisites ready while both payment gates remain OFF.
+3. Immediately before a real charge, obtain explicit owner authorization for controlled real acceptance purchases.
+4. Only then set `payment_acceptance_enabled=true` while keeping `public_payment_enabled=false`.
+5. Complete controlled real purchase(s) through the private Launch Center acceptance flow and verify exact Whop payment → signed callback → independent Whop lookup → exactly one Shopify order. For FaceJamas also verify Shopify stores `Personalization ID` and private fulfillment resolution works.
+6. Record the immutable `attempt_...` acceptance IDs. Migration 012 ensures only true controlled acceptance attempts can be recorded.
+7. Keep/confirm brand configuration `live/live` after acceptance. It is already set to `live/live` currently.
+8. Obtain a **separate explicit owner authorization** before setting `public_payment_enabled=true` for customers.
 
 ## Definition of done
 
