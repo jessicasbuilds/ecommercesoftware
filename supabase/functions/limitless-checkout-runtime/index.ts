@@ -36,6 +36,21 @@ type CartPayload = { version: 3; brandId: string; slug: string; items: CartItem[
 type ReceiptPayload = { version: 3; brandId: string; slug: string; key: string; issuedAt: number; expiresAt: number };
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
+function customerError(message: string) {
+  if (/personalization reference|same Shopify variant/i.test(message)) return "Each personalized item needs its own verified photo. Return to the store and re-add the item.";
+  if (/cart item is unavailable in Shopify/i.test(message)) return "A cart item is no longer available. Return to the store and update your cart.";
+  if (/payment attempt not found/i.test(message)) return "We couldn’t find this payment confirmation. If you paid, do not pay again—contact support.";
+  if (/payment attempt uses an unsupported runtime version/i.test(message)) return "This checkout is out of date. Return to the store and start again.";
+  if (/payment attempt cannot start another payment/i.test(message)) return "This payment session can no longer be used. Return to the store and start checkout again.";
+  if (/draft|inventory reservation|order is not marked paid/i.test(message)) return "We couldn’t prepare your order safely. Return to the store and try again.";
+  if (/Shopify|Whop|provider|connection|credentials|permissions|encryption|gate state/i.test(message)) {
+    if (/rate limit|busy/i.test(message)) return "Checkout is busy right now. Try again shortly.";
+    if (/cart|discount|variant|pricing|total|shipping policy|priority processing/i.test(message)) return "Your cart changed or could not be confirmed. Return to the store and try checkout again.";
+    if (/checkout session|checkout URL|payment|amount/i.test(message)) return "We couldn’t prepare secure payment. Please try again.";
+    return "Checkout is temporarily unavailable. Please try again shortly.";
+  }
+  return message;
+}
 function json(data: unknown, status = 200) { return Response.json(data, { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } }); }
 function text(value: unknown, max: number, allowEmpty = false) {
   if (typeof value !== "string") return "";
@@ -323,4 +338,4 @@ async function actionPaymentStart(req:Request,payload:AnyObject){await rateLimit
 async function actionStatus(req:Request,payload:AnyObject){await rateLimit(req,"status",240,60000);const brand=await brandBySlug(text(payload.slug,100));const token=text(payload.receipt,5000);const receipt=await decryptToken<ReceiptPayload>(brand.id,"customer-receipt",token);const now=Date.now();if(receipt.version!==3||receipt.brandId!==brand.id||receipt.slug!==brand.slug||receipt.expiresAt<=now||receipt.issuedAt>now+60000||receipt.expiresAt-receipt.issuedAt>RECEIPT_TTL_MS)throw new HttpError(410,"This payment confirmation link has expired.");const attempt=await rpc<AnyObject|null>("limitless_checkout_payment_get_by_key",{p_brand_id:brand.id,p_key:receipt.key});if(!attempt)throw new HttpError(404,"Payment attempt not found.");let status="awaiting_payment";if(attempt.state==="completed")status="confirmed";else if(attempt.state==="review")status="review";else if(attempt.state==="paid")status="processing";else if(Number(attempt.expiresAt)<=now)status="expired";return json({status,totalCents:Number(attempt.totalCents),currency:"USD",expiresAt:Number(attempt.expiresAt)});}
 async function actionHealth(){const gates=await runtimeConfig();return json({runtime:"v3",paymentAcceptanceEnabled:gates.acceptance,publicPaymentEnabled:gates.public});}
 
-Deno.serve(async(req:Request)=>{if(req.method!=="POST")return json({error:"Method not allowed."},405);let payload:AnyObject;try{payload=await req.json() as AnyObject;}catch{return json({error:"Invalid request."},400);}try{switch(payload.action){case"cart-start":return await actionCartStart(req,payload);case"view":return await actionView(req,payload);case"quote":return await actionQuote(req,payload);case"payment-start":return await actionPaymentStart(req,payload);case"status":return await actionStatus(req,payload);case"health":return await actionHealth();default:throw new HttpError(404,"Checkout action not found.");}}catch(error){if(error instanceof HttpError)return json({error:error.message},error.status);console.error("checkout-runtime",error);return json({error:"Checkout service is temporarily unavailable."},503);}});
+Deno.serve(async(req:Request)=>{if(req.method!=="POST")return json({error:"Method not allowed."},405);let payload:AnyObject;try{payload=await req.json() as AnyObject;}catch{return json({error:"Invalid request."},400);}try{switch(payload.action){case"cart-start":return await actionCartStart(req,payload);case"view":return await actionView(req,payload);case"quote":return await actionQuote(req,payload);case"payment-start":return await actionPaymentStart(req,payload);case"status":return await actionStatus(req,payload);case"health":return await actionHealth();default:throw new HttpError(404,"Checkout action not found.");}}catch(error){if(error instanceof HttpError)return json({error:customerError(error.message)},error.status);console.error("checkout-runtime",error);return json({error:"Checkout service is temporarily unavailable."},503);}});
