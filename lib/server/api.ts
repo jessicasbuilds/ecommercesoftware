@@ -11,6 +11,7 @@ import { calculateLaunchQuote } from "./launch-quote";
 import { verifyWhopWebhook } from "./whop-webhook";
 import { startPayment, reconcilePayment, whopPaymentReference } from "./payment-service";
 import { enqueuePayment } from "./payment-jobs";
+import { workerSignature } from "./worker-auth";
 import { customerPaymentStatus, publicPaymentEnabled, quoteCustomerCheckout, startCustomerCheckoutPayment } from "./customer-checkout";
 import { activateLiveCheckout, launchReadiness, recordLaunchAcceptance } from "./launch-activation";
 import { z } from "zod";
@@ -43,12 +44,24 @@ export async function handleApi(request: Request): Promise<Response> {
     const recorded = await db.recordWebhookEvent(brand.id, { id: event.id, type: event.type, accountId, ...(resourceId ? { resourceId } : {}), receivedAt: new Date().toISOString() });
     const payment = whopPaymentReference(event);
     if (payment) {
+      await enqueuePayment(db, brand.id, payment);
+      // Dispatch once from the payment event. If this fast handoff fails, the job
+      // remains queued and the low-frequency recovery schedule will pick it up.
       try {
-        await reconcilePayment(db, brand.id, payment.attemptId, payment.paymentId);
+        const timestamp = String(Date.now());
+        const response = await fetch(new URL("/.netlify/functions/payment-worker-background", site.origin), {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(5_000),
+          headers: {
+            "x-worker-time": timestamp,
+            "x-worker-signature": workerSignature(process.env.SESSION_SECRET ?? "", timestamp),
+          },
+        });
+        if (response.status !== 202) throw new Error("Payment worker dispatch failed.");
       } catch {
-        // Most successful-payment webhooks reconcile immediately. Only transient
-        // failures enter the durable retry queue for the low-frequency recovery job.
-        await enqueuePayment(db, brand.id, payment);
+        // Durable queue + hourly recovery means the webhook can still acknowledge
+        // receipt instead of causing duplicate provider retries.
       }
     }
     return json({ received: true, duplicate: recorded.duplicate, processed: Boolean(payment) });
