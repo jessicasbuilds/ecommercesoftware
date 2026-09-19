@@ -12,4 +12,6 @@ export default async () => {
   if (response.status !== 202) throw new Error("Payment worker dispatch failed.");
 };
 
-export const config: Config = { schedule: "* * * * *" };
+// Recovery only: normal successful payments reconcile from the Whop webhook.
+// Run hourly to recover transient provider/order-sync failures without constant polling.
+export const config: Config = { schedule: "0 * * * *" };
