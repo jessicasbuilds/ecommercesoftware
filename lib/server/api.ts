@@ -42,7 +42,15 @@ export async function handleApi(request: Request): Promise<Response> {
     const resourceId = typeof event.data.id === "string" ? event.data.id : undefined;
     const recorded = await db.recordWebhookEvent(brand.id, { id: event.id, type: event.type, accountId, ...(resourceId ? { resourceId } : {}), receivedAt: new Date().toISOString() });
     const payment = whopPaymentReference(event);
-    if (payment) await enqueuePayment(db, brand.id, payment);
+    if (payment) {
+      try {
+        await reconcilePayment(db, brand.id, payment.attemptId, payment.paymentId);
+      } catch {
+        // Most successful-payment webhooks reconcile immediately. Only transient
+        // failures enter the durable retry queue for the low-frequency recovery job.
+        await enqueuePayment(db, brand.id, payment);
+      }
+    }
     return json({ received: true, duplicate: recorded.duplicate, processed: Boolean(payment) });
   }
   if (path === "/api/auth/csrf" && method === "GET") {
